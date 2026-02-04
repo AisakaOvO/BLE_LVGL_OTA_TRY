@@ -1,0 +1,21 @@
+
+#include <lvgl.h>
+#include "lv_conf.h"
+#include <esp_heap_caps.h>
+#include <TFT_eSPI.h>
+#include "Touch_CST328.h"
+
+#define LVGL_WIDTH     240
+#define LVGL_HEIGHT    320
+#define LVGL_BUF_LEN  (LVGL_WIDTH * LVGL_HEIGHT / 20)
+
+#define EXAMPLE_LVGL_TICK_PERIOD_MS  2
+
+
+void Lvgl_print(const char * buf);
+void Lvgl_Display_LCD( lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_t *color_p ); // Displays LVGL content on the LCD.    This function implements associating LVGL data to the LCD screen
+void Lvgl_Touchpad_Read( lv_indev_drv_t * indev_drv, lv_indev_data_t * data );                // Read the touchpad
+void example_increase_lvgl_tick(void *arg);
+
+void Lvgl_Init(void);
+void Lvgl_Loop(void);
