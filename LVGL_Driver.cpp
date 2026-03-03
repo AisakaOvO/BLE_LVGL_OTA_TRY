@@ -67,6 +67,10 @@ void example_increase_lvgl_tick(void *arg)
     /* Tell LVGL how many milliseconds has elapsed */
     lv_tick_inc(EXAMPLE_LVGL_TICK_PERIOD_MS);
 }
+
+
+
+
 void Lvgl_Init(void)
 {
   lv_init();

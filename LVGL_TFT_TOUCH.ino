@@ -1,26 +1,33 @@
 #include <lvgl.h>
 #include <TFT_eSPI.h>
 #include <SPI.h>
-#include <BleCombo.h>
+//#include <BleCombo.h>
 #include <Touch_CST328.h>
 #include <LVGL_Driver.h>
 #include <BleComboCamera.h>
-
+#include <OtaServer.h>
 
 
 BleComboCamera Camera("Aisaka", "Espressif", 100);
 //BleComboMouse mouse(&keyboard);
 
 bool last_connected_status = false;
-
+bool ota_mode_active = false;
 // Create a label to show BLE status
+
+WebServer server(80);
+
 lv_obj_t *status_label = nullptr;
+lv_obj_t *ota_btn_label = nullptr;
+lv_obj_t *ota_btn = nullptr;
 
 //实现持续zoom in/out
 bool zoom_in_pressing = false ;
 bool zoom_out_pressing = false ;
 lv_timer_t *zoom_timer = nullptr;
 
+static uint32_t ota_press_start_ms = 0;
+static bool     ota_triggered      = false;
 
 class MyCallbacks: public BLECharacteristicCallbacks {
   void onRead(BLECharacteristic* pCharacteristic) { }
@@ -159,6 +166,65 @@ static void Zoom_in_event_cb(lv_event_t *e)
         }
     }
 }
+//*******OTA服务按钮回调函数******//
+
+//******************************//
+static void ota_btn_event_cb(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t *btn = lv_event_get_target(e);
+
+    if (code == LV_EVENT_PRESSED) {
+        if (ota_mode_active) return;
+        ota_press_start_ms = millis();
+        ota_triggered      = false;
+        lv_label_set_text(ota_btn_label, "OTA\n3s...");
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0xFF9800), 0);  // 橙色：准备中
+
+    } else if (code == LV_EVENT_PRESSING) {
+        if (ota_mode_active || ota_triggered) return;
+
+        uint32_t elapsed = millis() - ota_press_start_ms;
+
+        if (elapsed >= 3000) {
+            // ── 满 3 秒，触发 OTA 模式 ──
+            ota_triggered = true;
+            lv_label_set_text(ota_btn_label, "OTA\n连接中");
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0xF44336), 0);  // 红色：连接中
+            lv_timer_handler();  // 强制刷新一次屏幕，让"连接中"文字显示出来
+
+            enter_ota_mode();    // 连接 WiFi + 启动 HTTP Server（阻塞最多约 10 秒）
+
+            if (ota_mode_active) {
+                // 连接成功：显示 IP 地址
+                char ip_buf[24];
+                snprintf(ip_buf, sizeof(ip_buf), "OTA\n%s", WiFi.localIP().toString().c_str());
+                lv_label_set_text(ota_btn_label, ip_buf);
+                lv_obj_set_style_bg_color(btn, lv_color_hex(0x4CAF50), 0);  // 绿色：就绪
+            } else {
+                // 连接失败
+                lv_label_set_text(ota_btn_label, "OTA\n失败");
+                lv_obj_set_style_bg_color(btn, lv_color_hex(0xF44336), 0);  // 红色：失败
+                ota_triggered = false;
+            }
+        } else {
+            // ── 显示倒计时 ──
+            uint32_t remaining_secs = (3000 - elapsed + 999) / 1000;
+            char buf[12];
+            snprintf(buf, sizeof(buf), "OTA\n%lus...", remaining_secs);
+            lv_label_set_text(ota_btn_label, buf);
+        }
+
+    } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        if (ota_mode_active) return;  // OTA 已激活，按钮状态保持
+        if (!ota_triggered) {
+            // 松手时未到 3 秒，恢复原始状态
+            lv_label_set_text(ota_btn_label, "OTA");
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x607D8B), 0);  // 灰蓝色：待机
+        }
+    }
+}
+
+
 
 
 // Create UI
@@ -201,7 +267,7 @@ void create_ui()
     lv_obj_align(btn_zoom_out, LV_ALIGN_BOTTOM_LEFT, 20, -100);
     
     lv_obj_t *label_zoom_out = lv_label_create(btn_zoom_out);
-    lv_label_set_text(label_zoom_out, "ZOOM\n-");
+    lv_label_set_text(label_zoom_out, "ZOOM\n----");
     lv_obj_center(label_zoom_out);
     lv_obj_add_event_cb(btn_zoom_out, zoom_out_btn_event_cb, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(btn_zoom_out, zoom_out_btn_event_cb, LV_EVENT_RELEASED, NULL);
@@ -218,6 +284,23 @@ void create_ui()
     lv_obj_add_event_cb(btn_zoom_in, zoom_in_btn_event_cb, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(btn_zoom_in, zoom_in_btn_event_cb, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(btn_zoom_in, zoom_in_btn_event_cb, LV_EVENT_PRESS_LOST, NULL);
+
+
+    // ── OTA 升级按钮（左上角，长按 3 秒进入 OTA 模式）──
+    ota_btn = lv_btn_create(lv_scr_act());
+    lv_obj_set_size(ota_btn, 70, 50);
+    lv_obj_align(ota_btn, LV_ALIGN_TOP_LEFT, 5, 25);
+    lv_obj_set_style_bg_color(ota_btn, lv_color_hex(0x607D8B), 0);  // 初始灰蓝色
+
+    ota_btn_label = lv_label_create(ota_btn);
+    lv_label_set_text(ota_btn_label, "OTA");
+    lv_obj_set_style_text_font(ota_btn_label, &lv_font_montserrat_12, 0);
+    lv_obj_center(ota_btn_label);
+
+    lv_obj_add_event_cb(ota_btn, ota_btn_event_cb, LV_EVENT_PRESSED,    NULL);
+    lv_obj_add_event_cb(ota_btn, ota_btn_event_cb, LV_EVENT_PRESSING,   NULL);
+    lv_obj_add_event_cb(ota_btn, ota_btn_event_cb, LV_EVENT_RELEASED,   NULL);
+    lv_obj_add_event_cb(ota_btn, ota_btn_event_cb, LV_EVENT_PRESS_LOST, NULL);
 
 
     // Add event callback
@@ -278,6 +361,13 @@ void setup() {
 }
 
 void loop() {
+    if(ota_mode_active){
+
+        server.handleClient();
+
+    }
+
+
     lv_timer_handler();
     delay(5);
 }
